@@ -1,4 +1,4 @@
-package crawler
+package crawlerlib
 
 import (
 	"fmt"
@@ -15,23 +15,25 @@ type Storage interface {
 	SetLink(link string)
 }
 type Crawler struct {
-	domain      string
+	domains     []string
+	baseLink    *string
 	collector   *colly.Collector
 	linkFilter  LinkFilter
 	linkHandler LinkHandler
 	storage     Storage
 }
 
-func New(domain string) *Crawler {
+func New(domains ...string) *Crawler {
 	c := colly.NewCollector(
 		colly.Async(true),
 		colly.IgnoreRobotsTxt(),
 		colly.AllowURLRevisit(),
-		colly.AllowedDomains(domain),
+		colly.AllowedDomains(domains...),
 	)
 
 	return &Crawler{
 		collector: c,
+		domains:   domains,
 	}
 }
 
@@ -59,7 +61,7 @@ func (c *Crawler) Run() {
 		}
 	})
 
-	c.collector.Visit(c.domain)
+	c.collector.Visit(c.getBaseLink())
 	c.collector.Wait()
 }
 
@@ -67,8 +69,17 @@ func (c *Crawler) fullLink(link string) string {
 	isPartial := strings.HasPrefix(link, "/")
 
 	if isPartial {
-		return fmt.Sprintf("%s%s", c.domain, link)
+		return fmt.Sprintf("%s%s", *c.baseLink, link)
 	} else {
 		return link
 	}
+}
+
+func (c *Crawler) getBaseLink() string {
+	if c.baseLink == nil {
+		link := fmt.Sprintf("https://%s", c.domains[0])
+		c.baseLink = &link
+	}
+
+	return *c.baseLink
 }
