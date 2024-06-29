@@ -73,7 +73,7 @@ func (c *Crawler) fullLink(link string) string {
 	isPartial := strings.HasPrefix(link, "/")
 
 	if isPartial {
-		return fmt.Sprintf("%s%s", *c.baseLink, link)
+		return fmt.Sprintf("%s%s", c.getBaseLink(), link)
 	} else {
 		return link
 	}
