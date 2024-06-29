@@ -7,7 +7,6 @@ import (
 	"github.com/gocolly/colly"
 )
 
-// x
 type LinkFilter func(link string) bool
 type LinkHandler func(link string)
 
