@@ -45,7 +45,7 @@ func (c *Crawler) SetOnLink(handler LinkHandler) {
 	c.linkHandler = handler
 }
 
-func (c *Crawler) Run() {
+func (c *Crawler) Run(startLink string) {
 	c.collector.OnHTML("a", func(e *colly.HTMLElement) {
 		href := e.Attr("href")
 		fullLink := c.fullLink(href)
@@ -61,7 +61,7 @@ func (c *Crawler) Run() {
 		}
 	})
 
-	c.collector.Visit(c.getBaseLink())
+	c.collector.Visit(startLink)
 	c.collector.Wait()
 }
 
