@@ -37,6 +37,10 @@ func New(domains ...string) *Crawler {
 	}
 }
 
+func (c *Crawler) SetStorage(storage Storage) {
+	c.storage = storage
+}
+
 func (c *Crawler) SetLinkFilter(filter LinkFilter) {
 	c.linkFilter = filter
 }
