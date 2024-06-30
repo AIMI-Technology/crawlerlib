@@ -29,6 +29,7 @@ func New(domains ...string) *Crawler {
 		colly.IgnoreRobotsTxt(),
 		colly.AllowURLRevisit(),
 		colly.AllowedDomains(domains...),
+		colly.CacheDir("./colly_cache"),
 	)
 
 	return &Crawler{
