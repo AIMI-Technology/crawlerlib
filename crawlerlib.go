@@ -32,6 +32,10 @@ func New(domains ...string) *Crawler {
 		colly.CacheDir("./colly_cache"),
 	)
 
+	c.Limit(&colly.LimitRule{
+		Parallelism: 3,
+	})
+
 	return &Crawler{
 		collector: c,
 		domains:   domains,
