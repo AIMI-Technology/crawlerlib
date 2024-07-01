@@ -2,7 +2,9 @@ package crawlerlib
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/gocolly/colly"
 )
@@ -33,7 +35,8 @@ func New(domains ...string) *Crawler {
 	)
 
 	c.Limit(&colly.LimitRule{
-		Parallelism: 3,
+		Parallelism: 2,
+		Delay:       200 * time.Millisecond,
 	})
 
 	return &Crawler{
@@ -68,6 +71,10 @@ func (c *Crawler) Run(startLink string) {
 				panic(err)
 			}
 		}
+	})
+
+	c.collector.OnResponse(func(r *colly.Response) {
+		runtime.GC()
 	})
 
 	c.collector.Visit(startLink)
