@@ -1,101 +1,231 @@
 package crawlerlib
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"runtime"
+	"log"
+	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/gocolly/colly"
+	"github.com/AIMI-Technology/crawlerlib/classifier"
+	"github.com/AIMI-Technology/crawlerlib/database"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/PuerkitoBio/goquery"
+	lru "github.com/hashicorp/golang-lru"
 )
 
-type LinkFilter func(link string) bool
-type LinkHandler func(link string)
-
-type Storage interface {
-	LinkSeen(link string) bool
-	SetLink(link string)
-}
-type Crawler struct {
-	domains     []string
-	baseLink    *string
-	collector   *colly.Collector
-	linkFilter  LinkFilter
-	linkHandler LinkHandler
-	storage     Storage
+type PageData struct {
+	Url  string
+	Text string
+	Date *time.Time
 }
 
-func New(domains ...string) *Crawler {
-	c := colly.NewCollector(
-		colly.Async(true),
-		colly.IgnoreRobotsTxt(),
-		colly.AllowURLRevisit(),
-		colly.AllowedDomains(domains...),
-		colly.CacheDir("./colly_cache"),
-	)
+type DocumentInterface interface {
+	Find(selector string) *Selection
+}
 
-	c.Limit(&colly.LimitRule{
-		Parallelism: 2,
-		Delay:       200 * time.Millisecond,
+type SelectionInterface interface {
+	Each(func(idx int, selection *Selection))
+}
+type Document struct {
+	*goquery.Document
+}
+
+func (d *Document) Find(selector string) *Selection {
+	s := d.Document.Find(selector)
+	return &Selection{s}
+}
+
+type Selection struct {
+	*goquery.Selection
+}
+
+func (s *Selection) Each(callback func(idx int, selection *Selection)) {
+	s.Selection.Each(func(idx int, sel *goquery.Selection) {
+		callback(idx, &Selection{sel})
 	})
+}
+
+type Crawler struct {
+	baseUrl         string
+	visited         *lru.Cache
+	articleSelector string
+	hrefPattern     *regexp.Regexp
+	linkPattern     *regexp.Regexp
+	onDocument      func(doc DocumentInterface, url string) (*PageData, error)
+	onRelevant      func(data *PageData)
+	linkChan        chan *PageData
+	dateCutoff      time.Time
+	sourceCountry   string
+	numOfWorkers    int
+}
+
+type CrawlerConfig struct {
+	BaseUrl string
+	// ArticleTextSelector string
+	HrefPattern   string
+	LinkPattern   string
+	DateCutoff    time.Time
+	NumOfWorkers  *int
+	SourceCountry string
+}
+
+func NewCrawler(
+	config CrawlerConfig) *Crawler {
+	hrefRegex := regexp.MustCompile(config.HrefPattern)
+	linkRegex := regexp.MustCompile(config.LinkPattern)
+	visited, err := lru.New(10000)
+	if err != nil {
+		panic(err)
+	}
+
+	linkChan := make(chan *PageData, 1000)
+	numOfWorkers := 3
+	if config.NumOfWorkers != nil {
+		numOfWorkers = *config.NumOfWorkers
+	}
+
+	dateCutoff, _ := time.Parse(time.DateOnly, "2023-12-31")
 
 	return &Crawler{
-		collector: c,
-		domains:   domains,
+		baseUrl:     config.BaseUrl,
+		visited:     visited,
+		hrefPattern: hrefRegex,
+		linkPattern: linkRegex,
+		// articleSelector: config.ArticleTextSelector,
+		linkChan:      linkChan,
+		dateCutoff:    dateCutoff,
+		sourceCountry: config.SourceCountry,
+		numOfWorkers:  numOfWorkers,
 	}
 }
 
-func (c *Crawler) SetStorage(storage Storage) {
-	c.storage = storage
+func (c *Crawler) Start(url string) {
+	for i := 0; i < c.numOfWorkers; i++ {
+		go c.worker(c.linkChan, i+1)
+	}
+
+	c.visit(url)
 }
 
-func (c *Crawler) SetLinkFilter(filter LinkFilter) {
-	c.linkFilter = filter
+func (c *Crawler) OnDocument(handler func(doc DocumentInterface, url string) (*PageData, error)) {
+	c.onDocument = handler
 }
 
-func (c *Crawler) SetOnLink(handler LinkHandler) {
-	c.linkHandler = handler
+func (c *Crawler) OnRelevant(handler func(data *PageData)) {
+	c.onRelevant = handler
 }
 
-func (c *Crawler) Run(startLink string) {
-	c.collector.OnHTML("a", func(e *colly.HTMLElement) {
-		href := e.Attr("href")
-		fullLink := c.fullLink(href)
-		if !c.storage.LinkSeen(fullLink) && c.linkFilter(fullLink) {
-			c.storage.SetLink(fullLink)
+func (c *Crawler) visit(url string) {
+	queue := []string{url}
 
-			c.linkHandler(fullLink)
+	for len(queue) > 0 {
+		url := queue[0]
+		queue = queue[1:]
 
-			err := e.Request.Visit(fullLink)
+		log.Println("Visiting", url)
+
+		if _, seen := c.visited.Get(url); seen {
+			continue
+		}
+		c.visited.Add(url, true)
+
+		doc, err := c.get(url)
+		if err != nil {
+			fmt.Println("err", err)
+			continue
+		}
+
+		doc.Find("a").Each(func(i int, selection *goquery.Selection) {
+			if href, found := selection.Attr("href"); found {
+				if c.hrefPattern.MatchString(href) {
+					link := c.baseUrl + href
+					if _, seen := c.visited.Get(link); seen {
+						return
+					}
+
+					queue = append(queue, link)
+
+					if c.linkPattern.MatchString(link) {
+						doc, err := c.get(link)
+						if err != nil {
+							return
+						}
+
+						var d Document
+						if doc != nil {
+							d = Document{doc}
+						}
+
+						pageData, err := c.onDocument(&d, link)
+						if err != nil {
+							log.Println("Page data error", err)
+							return
+						}
+
+						c.visited.Add(link, true)
+						c.linkChan <- pageData
+					}
+				}
+			}
+		})
+	}
+}
+
+func (c *Crawler) get(url string) (*goquery.Document, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	return doc, nil
+}
+
+func (c *Crawler) worker(pageData chan *PageData, id int) {
+	for pageDatum := range pageData {
+		if pageDatum == nil {
+			log.Println("~~~ skipping processing due to nil data")
+			continue
+		}
+
+		log.Println("Processing", id, pageDatum.Url)
+		if classifier.IsArticleRelevant(pageDatum.Text) {
+			ctx := context.Background()
+			log.Println("Saving", pageDatum.Url)
+
+			textCollection := strings.TrimSpace(pageDatum.Text)
+			hasher := sha256.New()
+			hasher.Write([]byte(pageDatum.Url))
+			hashSum := hasher.Sum(nil)
+			hashString := hex.EncodeToString(hashSum)
+
+			var publishedAt time.Time
+			if pageDatum.Date != nil {
+				publishedAt = *pageDatum.Date
+			}
+
+			err := database.PutItem(ctx, map[string]types.AttributeValue{
+				"Id":            &types.AttributeValueMemberS{Value: hashString},
+				"Text":          &types.AttributeValueMemberS{Value: textCollection},
+				"SourceCountry": &types.AttributeValueMemberS{Value: c.sourceCountry},
+				"Url":           &types.AttributeValueMemberS{Value: pageDatum.Url},
+				"ScrapedAt":     &types.AttributeValueMemberS{Value: time.Now().Format(time.DateTime)},
+				"PublishedAt":   &types.AttributeValueMemberS{Value: publishedAt.Format(time.DateOnly)},
+			})
 			if err != nil {
 				panic(err)
 			}
 		}
-	})
-
-	c.collector.OnResponse(func(r *colly.Response) {
-		runtime.GC()
-	})
-
-	c.collector.Visit(startLink)
-	c.collector.Wait()
-}
-
-func (c *Crawler) fullLink(link string) string {
-	isPartial := strings.HasPrefix(link, "/")
-
-	if isPartial {
-		return fmt.Sprintf("%s%s", c.getBaseLink(), link)
-	} else {
-		return link
 	}
-}
-
-func (c *Crawler) getBaseLink() string {
-	if c.baseLink == nil {
-		link := fmt.Sprintf("https://%s", c.domains[0])
-		c.baseLink = &link
-	}
-
-	return *c.baseLink
 }
