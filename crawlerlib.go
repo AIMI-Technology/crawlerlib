@@ -56,6 +56,7 @@ type Crawler struct {
 	linkPattern     *regexp.Regexp
 	onDocument      func(doc DocumentInterface, url string) (*PageData, error)
 	onRelevant      func(data *PageData)
+	processHref     func(href string) string
 	linkChan        chan *PageData
 	dateCutoff      time.Time
 	sourceCountry   string
@@ -118,6 +119,10 @@ func (c *Crawler) OnRelevant(handler func(data *PageData)) {
 	c.onRelevant = handler
 }
 
+func (c *Crawler) ProcessHref(handler func(href string) string) {
+	c.processHref = handler
+}
+
 func (c *Crawler) visit(url string) {
 	queue := []string{url}
 
@@ -141,7 +146,13 @@ func (c *Crawler) visit(url string) {
 		doc.Find("a").Each(func(i int, selection *goquery.Selection) {
 			if href, found := selection.Attr("href"); found {
 				if c.hrefPattern.MatchString(href) {
-					link := c.baseUrl + href
+					var link string
+					if c.processHref != nil {
+						link = c.processHref(href)
+					} else {
+						link = c.baseUrl + href
+					}
+
 					if _, seen := c.visited.Get(link); seen {
 						return
 					}
