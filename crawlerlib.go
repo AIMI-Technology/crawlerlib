@@ -2,8 +2,6 @@ package crawlerlib
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,7 +11,6 @@ import (
 
 	"github.com/AIMI-Technology/crawlerlib/classifier"
 	"github.com/AIMI-Technology/crawlerlib/database"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/PuerkitoBio/goquery"
 	lru "github.com/hashicorp/golang-lru"
@@ -205,23 +202,22 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 			log.Println("Saving", pageDatum.Url)
 
 			textCollection := strings.TrimSpace(pageDatum.Text)
-			hasher := sha256.New()
-			hasher.Write([]byte(pageDatum.Url))
-			hashSum := hasher.Sum(nil)
-			hashString := hex.EncodeToString(hashSum)
 
 			var publishedAt time.Time
 			if pageDatum.Date != nil {
 				publishedAt = *pageDatum.Date
+				cutoff, _ := time.Parse(time.DateOnly, "2024-01-01")
+				if publishedAt.Before(cutoff) {
+					return
+				}
 			}
 
-			err := database.PutItem(ctx, map[string]types.AttributeValue{
-				"Id":            &types.AttributeValueMemberS{Value: hashString},
-				"Text":          &types.AttributeValueMemberS{Value: textCollection},
-				"SourceCountry": &types.AttributeValueMemberS{Value: c.sourceCountry},
-				"Url":           &types.AttributeValueMemberS{Value: pageDatum.Url},
-				"ScrapedAt":     &types.AttributeValueMemberS{Value: time.Now().Format(time.DateTime)},
-				"PublishedAt":   &types.AttributeValueMemberS{Value: publishedAt.Format(time.DateOnly)},
+			err := database.PutItem(ctx, database.ScrapedData{
+				Text:          textCollection,
+				SourceCountry: c.sourceCountry,
+				Url:           pageDatum.Url,
+				ScrapedAt:     time.Now(),
+				PublishedAt:   publishedAt,
 			})
 			if err != nil {
 				panic(err)

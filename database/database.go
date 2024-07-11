@@ -3,98 +3,42 @@ package database
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/jackc/pgx/v5"
 )
 
-var client *dynamodb.Client
-var tableName string = "ScrapedData"
-
-type ScrapedData = map[string]types.AttributeValue
+var db *pgx.Conn
 
 func init() {
+	var err error
+	uname := os.Getenv("PG_UNAME")
+	pword := os.Getenv("PG_PWORD")
+	host := os.Getenv("PG_HOST")
+	dbname := os.Getenv("PG_DBNAME")
+	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s", uname, pword, host, dbname)
 	ctx := context.Background()
-
-	config, err := config.LoadDefaultConfig(ctx)
+	db, err = pgx.Connect(ctx, connStr)
 	if err != nil {
-		panic("unable to load SDK config " + err.Error())
+		log.Fatalf("unable to connect to database: %v\n", err)
 	}
 
-	config.Region = "us-east-1"
-
-	client = dynamodb.NewFromConfig(config)
+	err = db.Ping(ctx)
+	if err != nil {
+		log.Fatalf("unable to reach database: %v\n", err)
+	}
 }
 
-func Client() *dynamodb.Client {
-	return client
+func Client() *pgx.Conn {
+	return db
 }
 
-func PutItem(ctx context.Context, item map[string]types.AttributeValue) error {
-	_, err := client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &tableName,
-		Item:      item,
-	})
-
+func PutItem(ctx context.Context, item ScrapedData) error {
+	query := `INSERT INTO scraped_data (text, scraped_at, published_at, url, source_country, content_country) 
+              VALUES ($1, $2, $3, $4, $5, $6)
+              ON CONFLICT (url) 
+              DO NOTHING`
+	_, err := db.Exec(ctx, query, item.Text, item.ScrapedAt, item.PublishedAt, item.Url, item.SourceCountry, item.ContentCountry)
 	return err
-}
-
-func ScanForEmptyPrimaryCategory(ctx context.Context) (*dynamodb.ScanOutput, error) {
-	expression := "attribute_not_exists(PrimaryCategory) or PrimaryCategory = :val"
-	params := map[string]types.AttributeValue{
-		":val": &types.AttributeValueMemberS{Value: ""},
-	}
-
-	scanInput := &dynamodb.ScanInput{
-		TableName:                 &tableName,
-		FilterExpression:          &expression,
-		ExpressionAttributeValues: params,
-	}
-
-	result, err := client.Scan(ctx, scanInput)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan for empty PrimaryCategory: %w", err)
-	}
-
-	return result, nil
-}
-
-func UpdateItem(ctx context.Context, itemId string, attributesToUpdate map[string]interface{}) error {
-	// Construct the update expression parts
-	var updateExpression string
-	var expressionAttributeNames map[string]string = make(map[string]string)
-	var expressionAttributeValues map[string]types.AttributeValue = make(map[string]types.AttributeValue)
-
-	i := 0
-	for attrName, attrValue := range attributesToUpdate {
-		placeholderName := fmt.Sprintf("#N%d", i)
-		placeholderValue := fmt.Sprintf(":v%d", i)
-		if i == 0 {
-			updateExpression = "SET " + placeholderName + " = " + placeholderValue
-		} else {
-			updateExpression += ", " + placeholderName + " = " + placeholderValue
-		}
-		expressionAttributeNames[placeholderName] = attrName
-		expressionAttributeValues[placeholderValue] = &types.AttributeValueMemberS{Value: fmt.Sprint(attrValue)}
-		i++
-	}
-
-	// Prepare the UpdateItem input
-	input := &dynamodb.UpdateItemInput{
-		TableName:                 &tableName,
-		Key:                       map[string]types.AttributeValue{"Id": &types.AttributeValueMemberS{Value: itemId}},
-		UpdateExpression:          &updateExpression,
-		ExpressionAttributeNames:  expressionAttributeNames,
-		ExpressionAttributeValues: expressionAttributeValues,
-		ReturnValues:              types.ReturnValueUpdatedNew,
-	}
-
-	// Execute the UpdateItem operation
-	_, err := client.UpdateItem(ctx, input)
-	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
-	}
-
-	return nil
 }
