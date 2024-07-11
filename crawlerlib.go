@@ -28,6 +28,7 @@ type DocumentInterface interface {
 
 type SelectionInterface interface {
 	Each(func(idx int, selection *Selection))
+	First() *Selection
 }
 type Document struct {
 	*goquery.Document
@@ -46,6 +47,10 @@ func (s *Selection) Each(callback func(idx int, selection *Selection)) {
 	s.Selection.Each(func(idx int, sel *goquery.Selection) {
 		callback(idx, &Selection{sel})
 	})
+}
+
+func (s *Selection) First() *Selection {
+	return &Selection{s.Selection.First()}
 }
 
 type Crawler struct {
@@ -213,10 +218,8 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 
 			textCollection := strings.TrimSpace(pageDatum.Text)
 
-			var publishedAt time.Time
 			if pageDatum.Date != nil {
-				publishedAt = *pageDatum.Date
-				if publishedAt.Before(c.dateCutoff) {
+				if pageDatum.Date.Before(c.dateCutoff) {
 					return
 				}
 			}
@@ -226,7 +229,7 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 				SourceCountry: c.sourceCountry,
 				Url:           pageDatum.Url,
 				ScrapedAt:     time.Now().UTC(),
-				PublishedAt:   &publishedAt,
+				PublishedAt:   pageDatum.Date,
 			})
 			if err != nil {
 				panic(err)
