@@ -6,10 +6,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var db *pgx.Conn
+var dbPool *pgxpool.Pool
 
 func init() {
 	var err error
@@ -19,19 +19,25 @@ func init() {
 	dbname := os.Getenv("PG_DBNAME")
 	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s", uname, pword, host, dbname)
 	ctx := context.Background()
-	db, err = pgx.Connect(ctx, connStr)
+
+	config, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
-		log.Fatalf("unable to connect to database: %v\n", err)
+		log.Fatalf("unable to parse database connection string: %v\n", err)
 	}
 
-	err = db.Ping(ctx)
+	dbPool, err = pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		log.Fatalf("unable to create database connection pool: %v\n", err)
+	}
+
+	err = dbPool.Ping(ctx)
 	if err != nil {
 		log.Fatalf("unable to reach database: %v\n", err)
 	}
 }
 
-func Client() *pgx.Conn {
-	return db
+func Client() *pgxpool.Pool {
+	return dbPool
 }
 
 func PutItem(ctx context.Context, item ScrapedData) error {
@@ -39,6 +45,6 @@ func PutItem(ctx context.Context, item ScrapedData) error {
               VALUES ($1, $2, $3, $4, $5, $6)
               ON CONFLICT (url) 
               DO NOTHING`
-	_, err := db.Exec(ctx, query, item.Text, item.ScrapedAt, item.PublishedAt, item.Url, item.SourceCountry, item.ContentCountry)
+	_, err := dbPool.Exec(ctx, query, item.Text, item.ScrapedAt, item.PublishedAt, item.Url, item.SourceCountry, item.ContentCountry)
 	return err
 }

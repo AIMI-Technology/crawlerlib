@@ -147,7 +147,6 @@ func (c *Crawler) visit(url string) {
 					}
 
 					queue = append(queue, link)
-
 					if c.linkPattern.MatchString(link) {
 						doc, err := c.get(link)
 						if err != nil {
@@ -206,8 +205,7 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 			var publishedAt time.Time
 			if pageDatum.Date != nil {
 				publishedAt = *pageDatum.Date
-				cutoff, _ := time.Parse(time.DateOnly, "2024-01-01")
-				if publishedAt.Before(cutoff) {
+				if publishedAt.Before(c.dateCutoff) {
 					return
 				}
 			}
@@ -217,7 +215,7 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 				SourceCountry: c.sourceCountry,
 				Url:           pageDatum.Url,
 				ScrapedAt:     time.Now().UTC(),
-				PublishedAt:   publishedAt,
+				PublishedAt:   &publishedAt,
 			})
 			if err != nil {
 				panic(err)
