@@ -216,7 +216,7 @@ func (c *Crawler) worker(pageData chan *PageData, id int) {
 				Text:          textCollection,
 				SourceCountry: c.sourceCountry,
 				Url:           pageDatum.Url,
-				ScrapedAt:     time.Now(),
+				ScrapedAt:     time.Now().UTC(),
 				PublishedAt:   publishedAt,
 			})
 			if err != nil {
